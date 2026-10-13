@@ -35,7 +35,17 @@ def build_model(num_classes, pretrained=True, freeze=False):
     Do not put a softmax at the end. The loss function adds it for you, and the
     web page adds it for you.
     """
-    raise NotImplementedError("Problem 3: fill in build_model")
+    from torchvision.models import ResNet18_Weights, resnet18
+
+    if num_classes < 1:
+        raise ValueError("num_classes must be positive")
+    weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+    model = resnet18(weights=weights)
+    if freeze:
+        for parameter in model.parameters():
+            parameter.requires_grad = False
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    return model
 
 
 def train(model, X_train, y_train, X_test, y_test,
@@ -78,7 +88,74 @@ def train(model, X_train, y_train, X_test, y_test,
     The model is trained in place. When this function returns, `model` is the
     trained one, and it is left on the device it was trained on.
     """
-    raise NotImplementedError("Problem 3: fill in train")
+    from torch.utils.data import DataLoader, TensorDataset
+
+    if epochs < 1 or batch_size < 1 or lr <= 0:
+        raise ValueError("epochs, batch_size and lr must be positive")
+    if len(X_train) == 0 or len(X_test) == 0:
+        raise ValueError("Training and test sets must both contain rows")
+    if len(X_train) != len(y_train) or len(X_test) != len(y_test):
+        raise ValueError("Each set must have one label per row")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    if not parameters:
+        raise ValueError("The model has no trainable parameters")
+    optimiser = torch.optim.Adam(parameters, lr=lr)
+    criterion = nn.CrossEntropyLoss()
+
+    def loader(X, y, shuffle):
+        dataset = TensorDataset(
+            torch.as_tensor(X, dtype=torch.float32, device="cpu"),
+            torch.as_tensor(y, dtype=torch.long, device="cpu"),
+        )
+        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+    training = loader(X_train, y_train, True)
+    testing = loader(X_test, y_test, False)
+    history = {key: [] for key in ("train_loss", "train_acc", "test_loss", "test_acc")}
+
+    for epoch in range(epochs):
+        model.train()
+        # A frozen BatchNorm layer must also keep its running statistics fixed.
+        for module in model.modules():
+            if isinstance(module, nn.modules.batchnorm._BatchNorm):
+                if not any(p.requires_grad for p in module.parameters()):
+                    module.eval()
+        train_loss, train_correct = 0.0, 0
+        for rows, labels in training:
+            rows, labels = rows.to(device), labels.to(device)
+            optimiser.zero_grad()
+            logits = model(rows)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimiser.step()
+            train_loss += loss.item() * len(labels)
+            train_correct += (logits.argmax(dim=1) == labels).sum().item()
+
+        model.eval()
+        test_loss, test_correct = 0.0, 0
+        with torch.no_grad():
+            for rows, labels in testing:
+                rows, labels = rows.to(device), labels.to(device)
+                logits = model(rows)
+                test_loss += criterion(logits, labels).item() * len(labels)
+                test_correct += (logits.argmax(dim=1) == labels).sum().item()
+
+        history["train_loss"].append(train_loss / len(training.dataset))
+        history["train_acc"].append(train_correct / len(training.dataset))
+        history["test_loss"].append(test_loss / len(testing.dataset))
+        history["test_acc"].append(test_correct / len(testing.dataset))
+        print(
+            f"epoch {epoch + 1}/{epochs}: "
+            f"train loss {history['train_loss'][-1]:.4f}, "
+            f"train accuracy {history['train_acc'][-1]:.4f}, "
+            f"test loss {history['test_loss'][-1]:.4f}, "
+            f"test accuracy {history['test_acc'][-1]:.4f}",
+            flush=True,
+        )
+    return history
 
 
 def count_trainable(model):

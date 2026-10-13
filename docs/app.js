@@ -10,6 +10,15 @@ let session = null;    // the network from model.onnx, ready to run
 
 const $ = (id) => document.getElementById(id);
 
+const modelOptions = {
+  clean: { name: "Cleaned model", base: "", hint: "Use an ordinary photo. This model uses the square shown below." },
+  face: { name: "Face-focused model", base: "models/face/", hint: "Use a face-focused crop with some hair and neck visible. Face cropping is not automatic. For webcam input, keep the face large and centered; check the square below." },
+};
+const modelCache = new Map();
+let loadingModel = false;
+let lastSource = null;
+
+
 // GitHub Pages cannot send the headers that multi-threaded WebAssembly needs,
 // so run on one thread. For one picture at a time that is fast enough.
 ort.env.wasm.numThreads = 1;
@@ -124,7 +133,7 @@ function drawBars(probabilities) {
 
   $("bars").innerHTML = ranked.map((item, place) => `
     <div class="row${place === 0 ? " top" : ""}">
-      <div class="name">${item.name}</div>
+      <div class="name">${item.name.replace(/^le_sserafim_/, "").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}</div>
       <div class="bar"><div class="fill" style="width:${(item.p * 100).toFixed(1)}%"></div></div>
       <div class="pct">${(item.p * 100).toFixed(1)}%</div>
     </div>`).join("");
@@ -136,7 +145,8 @@ let busy = false;
 let waiting = null;
 
 async function classify(source) {
-  if (!session) return;
+  lastSource = source;
+  if (!session || loadingModel) return;
   if (busy) {
     waiting = source;
     return;
@@ -202,6 +212,7 @@ function showPanel(which) {
   for (const name of ["Cam", "File", "Draw"]) {
     $("panel" + name).hidden = name !== which;
     $("tab" + name).classList.toggle("on", name === which);
+    $("tab" + name).setAttribute("aria-pressed", String(name === which));
   }
 }
 $("tabCam").onclick = () => showPanel("Cam");
@@ -299,43 +310,52 @@ $("clearPad").onclick = () => { clearPad(); };
 // Start
 // ---------------------------------------------------------------------------
 
-async function start() {
+async function selectModel(key) {
+  const option = modelOptions[key];
+  if (!option || loadingModel) return;
+  loadingModel = true;
+  waiting = null;
+  $("modelChoice").disabled = true;
+  $("modelHint").textContent = option.hint;
+  $("selftest").className = "badge";
+  $("selftest").textContent = "self test: running…";
+  $("subtitle").textContent = `Loading ${option.name.toLowerCase()}, about 45 MB…`;
+  $("bars").replaceChildren();
+  $("small").getContext("2d").clearRect(0, 0, 224, 224);
   try {
-    const modelResponse = await fetch("model.json");
-    if (!modelResponse.ok) throw new Error("model.json not found");
-    model = await modelResponse.json();
-
-    $("subtitle").textContent = "Loading the network, about 45 MB. The first time takes a few seconds.";
-    session = await ort.InferenceSession.create("model.onnx", {
-      executionProviders: ["wasm"],
-    });
-
-    document.title = model.labels.join(" / ");
-    $("title").textContent = model.labels.join("  ·  ");
-    $("subtitle").textContent =
-      `${model.labels.length} classes, ResNet18 on ` +
-      `${model.input.crop}x${model.input.crop} colour input, ` +
-      `${model.n_parameters.toLocaleString()} parameters.`;
-
-    drawBars(model.labels.map(() => 0));
-
-    const selfTestResponse = await fetch("selftest.json");
-    if (selfTestResponse.ok) {
-      await runSelfTest((await selfTestResponse.json()).cases);
-    } else {
-      $("selftest").textContent = "self test: selftest.json is missing";
+    // Let an in-flight inference finish before changing its model metadata.
+    while (busy) await new Promise((resolve) => setTimeout(resolve, 25));
+    let entry = modelCache.get(key);
+    if (!entry) {
+      const response = await fetch(option.base + "model.json");
+      if (!response.ok) throw new Error("Model metadata could not be loaded");
+      const metadata = await response.json();
+      const network = await ort.InferenceSession.create(option.base + "model.onnx", {
+        executionProviders: ["wasm"],
+      });
+      const selfTestResponse = await fetch(option.base + "selftest.json");
+      if (!selfTestResponse.ok) throw new Error("Self-test images could not be loaded");
+      entry = { model: metadata, session: network, cases: (await selfTestResponse.json()).cases };
+      modelCache.set(key, entry);
     }
+    model = entry.model;
+    session = entry.session;
+    document.title = `${option.name} · LE SSERAFIM classifier`;
+    $("title").textContent = "Who’s in the picture?";
+    $("subtitle").textContent = `${option.name} · ${model.labels.length} classes · ${model.input.crop}×${model.input.crop} input`;
+    drawBars(model.labels.map(() => 0));
+    await runSelfTest(entry.cases);
   } catch (error) {
-    $("subtitle").textContent = "Could not load the model.";
+    session = null;
+    $("subtitle").textContent = `${option.name} could not be loaded.`;
     $("selftest").className = "badge bad";
-    $("selftest").textContent =
-      "Could not load model.json and model.onnx. Either you have not exported " +
-      "a model yet, in which case run `python src/run.py` and then " +
-      "`python src/export_web.py --tag run`, or you opened this file by " +
-      "double clicking it, which browsers block. Run " +
-      "`python -m http.server -d docs 8000` and open http://localhost:8000. " +
-      "(" + error.message + ")";
+    $("selftest").textContent = `Model load failed: ${error.message}. Reload the page or choose the other model.`;
+  } finally {
+    loadingModel = false;
+    $("modelChoice").disabled = false;
   }
+  if (session && lastSource) await classify(lastSource);
 }
 
-start();
+$("modelChoice").onchange = (event) => selectModel(event.target.value);
+selectModel("clean");

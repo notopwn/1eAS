@@ -32,12 +32,29 @@ def predict_logits(model, X, batch_size=64):
     next(model.parameters()).device, and bring the answers back with .cpu().
     Work in batches so that a large test set does not run you out of memory.
     """
-    raise NotImplementedError("Problem 3: fill in predict_logits")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if len(X) == 0:
+        raise ValueError("Prediction requires at least one row")
+    model.eval()
+    device = next(model.parameters()).device
+    outputs = []
+    with torch.no_grad():
+        for start in range(0, len(X), batch_size):
+            batch = torch.as_tensor(
+                X[start:start + batch_size], dtype=torch.float32, device=device
+            )
+            logits = model(batch)
+            outputs.append(logits.cpu().numpy().astype(np.float32, copy=False))
+    return np.concatenate(outputs, axis=0)
 
 
 def accuracy(model, X, y):
     """Return the share of rows the model gets right, as a float 0.0 to 1.0."""
-    raise NotImplementedError("Problem 3: fill in accuracy")
+    if len(X) != len(y):
+        raise ValueError("Each row must have one label")
+    predicted = predict_logits(model, X).argmax(axis=1)
+    return float(np.mean(predicted == np.asarray(y)))
 
 
 def confusion_matrix(model, X, y, num_classes):
@@ -47,7 +64,24 @@ def confusion_matrix(model, X, y, num_classes):
     how many images of class i the model called class j. The diagonal is the
     ones it got right.
     """
-    raise NotImplementedError("Problem 3: fill in confusion_matrix")
+    if num_classes < 1:
+        raise ValueError("num_classes must be positive")
+    if len(X) != len(y):
+        raise ValueError("Each row must have one label")
+    matrix = np.zeros((num_classes, num_classes), dtype=np.int64)
+    if len(X) == 0:
+        return matrix
+    labels = np.asarray(y)
+    if not np.issubdtype(labels.dtype, np.integer):
+        raise ValueError("Labels must be integer class indices")
+    if np.any(labels < 0) or np.any(labels >= num_classes):
+        raise ValueError("Labels must lie within the class range")
+    logits = predict_logits(model, X)
+    if logits.shape[1] != num_classes:
+        raise ValueError("Model outputs must match num_classes")
+    predicted = logits.argmax(axis=1)
+    np.add.at(matrix, (labels, predicted), 1)
+    return matrix
 
 
 def worst_examples(model, X, y, paths, k=10):
@@ -66,7 +100,29 @@ def worst_examples(model, X, y, paths, k=10):
     These are the images to put in your report. A mistake the model was sure
     about tells you much more than a mistake it was unsure about.
     """
-    raise NotImplementedError("Problem 5: fill in worst_examples")
+    if len(X) != len(y) or len(y) != len(paths):
+        raise ValueError("X, y and paths must have the same length")
+    if k < 0:
+        raise ValueError("k must be nonnegative")
+    if k == 0 or len(X) == 0:
+        return []
+    logits = predict_logits(model, X)
+    predicted = logits.argmax(axis=1)
+    labels = np.asarray(y)
+    wrong = np.flatnonzero(predicted != labels)
+    probabilities = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probabilities /= probabilities.sum(axis=1, keepdims=True)
+    confidence = probabilities[np.arange(len(X)), predicted]
+    ranked = wrong[np.argsort(-confidence[wrong], kind="stable")][:k]
+    return [
+        {
+            "path": Path(paths[i]),
+            "true": int(labels[i]),
+            "predicted": int(predicted[i]),
+            "confidence": float(confidence[i]),
+        }
+        for i in ranked
+    ]
 
 
 # ---------------------------------------------------------------------------

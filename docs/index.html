@@ -30,7 +30,7 @@
 <h2 class="section-heading">Model settings</h2>
 <section class="card model-choice" aria-label="Model settings">
 <div class="model-row"><label class="model-label" for="modelChoice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z"/></svg><span>Model</span></label>
-<select id="modelChoice" aria-describedby="modelHint"><option value="clean">Cleaned model — original photos</option><option value="face">Face-focused model — face crops</option></select></div>
+<select id="modelChoice" aria-describedby="modelHint"><option value="clean">Cleaned model — original photos</option><option value="face">Face-focused model — face crops</option><option value="run">Original baseline</option><option value="scratch">From scratch</option><option value="frozen">Classifier only</option><option value="low_lr">Lower learning rate</option><option value="partial_block">Final block + classifier</option><option value="regularized">Augmentation + AdamW</option></select></div>
 <p class="hint" id="modelHint">Use an ordinary photo. This model uses the square shown below.</p>
 <div class="badge" id="selftest" role="status">self test: running…</div>
 </section>
@@ -44,5 +44,5 @@
 <footer><p>Built for MAS1004 Data &amp; AI · Sogang University.<br>ResNet18 · <a href="https://onnxruntime.ai/docs/tutorials/web/">ONNX Runtime Web</a> · All image processing happens on your device.</p></footer>
 </main></div>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.wasm.min.js"></script>
-<script src="app.js?v=soft-ui-5"></script>
+<script src="app.js?v=all-models-6"></script>
 </body></html>

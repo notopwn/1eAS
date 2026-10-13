@@ -11,6 +11,12 @@ let session = null;    // the network from model.onnx, ready to run
 const $ = (id) => document.getElementById(id);
 
 const modelOptions = {
+  run: { name: "Original baseline", base: "models/run/", hint: "ImageNet, all layers; trained before cleaning. Use original-framed photos." },
+  scratch: { name: "From scratch", base: "models/scratch/", hint: "Random initialization, all layers; trained before cleaning. Use original-framed photos." },
+  frozen: { name: "Classifier only", base: "models/frozen/", hint: "ImageNet features frozen; only the classifier trained before cleaning. Use original-framed photos." },
+  low_lr: { name: "Lower learning rate", base: "models/low_lr/", hint: "ImageNet, all layers at learning rate 0.00003; trained before cleaning. Use original-framed photos." },
+  partial_block: { name: "Final block + classifier", base: "models/partial_block/", hint: "ImageNet, final residual block and classifier trained on cleaned images. Use original-framed photos." },
+  regularized: { name: "Augmentation + AdamW", base: "models/regularized/", hint: "Mild training augmentation, AdamW and validation-based checkpoint selection on cleaned images. Use original-framed photos." },
   clean: { name: "Cleaned model", base: "", hint: "Use an ordinary photo. This model uses the square shown below." },
   face: { name: "Face-focused model", base: "models/face/", hint: "Use a face-focused crop with some hair and neck visible. Face cropping is not automatic. For webcam input, keep the face large and centered; check the square below." },
 };
@@ -337,6 +343,14 @@ async function selectModel(key) {
       if (!selfTestResponse.ok) throw new Error("Self-test images could not be loaded");
       entry = { model: metadata, session: network, cases: (await selfTestResponse.json()).cases };
       modelCache.set(key, entry);
+    }
+    modelCache.delete(key);
+    modelCache.set(key, entry);
+    while (modelCache.size > 2) {
+      const oldest = modelCache.keys().next().value;
+      const removed = modelCache.get(oldest);
+      modelCache.delete(oldest);
+      await removed.session.release();
     }
     model = entry.model;
     session = entry.session;

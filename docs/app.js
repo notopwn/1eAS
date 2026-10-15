@@ -64,19 +64,38 @@ function resizeShorterSide(source, target) {
   const finalWidth = width <= height ? target : Math.floor(width * scale);
   const finalHeight = width <= height ? Math.floor(height * scale) : target;
 
+  if (!Number.isFinite(scale) || width < 1 || height < 1) {
+    throw new Error("This image has no readable pixels. Try another JPEG or PNG.");
+  }
+  if (Math.max(finalWidth, finalHeight) > 4096) {
+    throw new Error("This image is unusually wide or tall. Crop closer to the subject and try again.");
+  }
+  // Avoid allocating a full-resolution canvas for phone photos. For ordinary
+  // sizes this preserves the existing halving steps; huge photos enter at a
+  // smaller stage, reducing memory at the cost of slightly different resizing.
+  while (Math.max(width, height) > 4096 &&
+         width >= finalWidth * 2 && height >= finalHeight * 2) {
+    width = Math.floor(width / 2);
+    height = Math.floor(height / 2);
+  }
+  const contextFor = (canvas) => {
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Not enough image memory. Try a smaller photo and reload the page.");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    return context;
+  };
   let stage = document.createElement("canvas");
   stage.width = width;
   stage.height = height;
-  stage.getContext("2d").drawImage(source, 0, 0, width, height);
+  contextFor(stage).drawImage(source, 0, 0, width, height);
 
   while (width >= finalWidth * 2 && height >= finalHeight * 2) {
     const next = document.createElement("canvas");
     next.width = Math.floor(width / 2);
     next.height = Math.floor(height / 2);
-    const context = next.getContext("2d");
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    context.drawImage(stage, 0, 0, next.width, next.height);
+    contextFor(next).drawImage(stage, 0, 0, next.width, next.height);
+    stage.width = stage.height = 1; // Release large backing stores promptly.
     stage = next;
     width = next.width;
     height = next.height;
@@ -86,10 +105,8 @@ function resizeShorterSide(source, target) {
   const last = document.createElement("canvas");
   last.width = finalWidth;
   last.height = finalHeight;
-  const context = last.getContext("2d");
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  context.drawImage(stage, 0, 0, finalWidth, finalHeight);
+  contextFor(last).drawImage(stage, 0, 0, finalWidth, finalHeight);
+  stage.width = stage.height = 1;
   return last;
 }
 
@@ -107,6 +124,7 @@ function toInput(source) {
   const context = scratch.getContext("2d", { willReadFrequently: true });
   context.clearRect(0, 0, crop, crop);
   context.drawImage(resized, left, top, crop, crop, 0, 0, crop, crop);
+  resized.width = resized.height = 1;
   const pixels = context.getImageData(0, 0, crop, crop).data;
 
   // Steps 4, 5 and 6: divide by 255, subtract the mean and divide by the
@@ -150,25 +168,52 @@ function drawBars(probabilities) {
 let busy = false;
 let waiting = null;
 
+function predictionStatus(message, failed = false) {
+  $("predictionStatus").textContent = message;
+  $("predictionStatus").classList.toggle("error", failed);
+}
+
 async function classify(source) {
   lastSource = source;
-  if (!session || loadingModel) return;
+  if (loadingModel) {
+    predictionStatus("Your image is ready. Waiting for the model to finish loading…");
+    return;
+  }
+  if (!session) {
+    predictionStatus("The model is not ready. Check the model message above or choose another model.", true);
+    return;
+  }
   if (busy) {
     waiting = source;
     return;
   }
   busy = true;
+  predictionStatus("Making a prediction…");
   try {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
     const input = toInput(source);
     showWhatItSees();
-    drawBars(softmax(await forward(input)));
+    const probabilities = softmax(await forward(input));
+    if (probabilities.some((value) => !Number.isFinite(value))) {
+      throw new Error("The model could not produce a valid answer. Try another photo or reload the page.");
+    }
+    if (source === lastSource && !loadingModel) {
+      drawBars(probabilities);
+      predictionStatus("Prediction updated.");
+    }
+  } catch (error) {
+    console.error("Prediction failed", error);
+    if (source === lastSource && !loadingModel) {
+      $("bars").replaceChildren();
+      predictionStatus("Prediction failed: " + (error.message || "Try a smaller JPEG or PNG and reload the page."), true);
+    }
   } finally {
     busy = false;
   }
   if (waiting) {
     const next = waiting;
     waiting = null;
-    classify(next);
+    await classify(next);
   }
 }
 
@@ -180,7 +225,7 @@ function loadImage(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = reject;
+    image.onerror = () => reject(new Error("This browser could not read the image. Export it as JPEG or PNG and try again. HEIC support depends on your browser."));
     image.src = source;
   });
 }
@@ -215,6 +260,14 @@ async function runSelfTest(cases) {
 // ---------------------------------------------------------------------------
 
 function showPanel(which) {
+  if (which !== "Cam" && cameraRunning) {
+    cameraRunning = false;
+    const video = $("video");
+    if (video.srcObject) video.srcObject.getTracks().forEach((track) => track.stop());
+    video.srcObject = null;
+    $("camStart").disabled = false;
+    $("camStart").textContent = "Turn the camera on";
+  }
   for (const name of ["Cam", "File", "Draw"]) {
     $("panel" + name).hidden = name !== which;
     $("tab" + name).classList.toggle("on", name === which);
@@ -253,16 +306,36 @@ $("camStart").onclick = async () => {
   }
 };
 
-// Upload
+// Upload: decoding and prediction errors must be visible, not silent.
+let uploadVersion = 0;
+let previewURL = null;
 $("file").onchange = async (event) => {
   const chosen = event.target.files[0];
   if (!chosen) return;
-  const image = await loadImage(URL.createObjectURL(chosen));
-  const preview = $("preview");
-  preview.src = image.src;
-  preview.hidden = false;
-  preview.style.maxHeight = "240px";
-  classify(image);
+  const version = ++uploadVersion;
+  const url = URL.createObjectURL(chosen);
+  $("bars").replaceChildren();
+  $("preview").hidden = true;
+  $("small").getContext("2d").clearRect(0, 0, 224, 224);
+  lastSource = null;
+  waiting = null;
+  predictionStatus("Reading “" + chosen.name + "”…");
+  try {
+    const image = await loadImage(url);
+    if (version !== uploadVersion) { URL.revokeObjectURL(url); return; }
+    if (previewURL) URL.revokeObjectURL(previewURL);
+    previewURL = url;
+    const preview = $("preview");
+    preview.src = url;
+    preview.hidden = false;
+    preview.style.maxHeight = "240px";
+    await classify(image);
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    if (version === uploadVersion) predictionStatus(error.message, true);
+  } finally {
+    if (version === uploadVersion) $("file").value = ""; // Allow retrying the same file.
+  }
 };
 
 // Drawing
@@ -327,12 +400,16 @@ async function selectModel(key) {
   $("selftest").textContent = "self test: running…";
   $("subtitle").textContent = `Loading ${option.name.toLowerCase()}, about 45 MB…`;
   $("bars").replaceChildren();
+  predictionStatus(lastSource ? "Waiting for the selected model…" : "Choose a photo to see predictions.");
   $("small").getContext("2d").clearRect(0, 0, 224, 224);
   try {
     // Let an in-flight inference finish before changing its model metadata.
     while (busy) await new Promise((resolve) => setTimeout(resolve, 25));
     let entry = modelCache.get(key);
     if (!entry) {
+      session = null;
+      for (const cached of modelCache.values()) await cached.session.release();
+      modelCache.clear();
       const response = await fetch(option.base + "model.json");
       if (!response.ok) throw new Error("Model metadata could not be loaded");
       const metadata = await response.json();
@@ -363,7 +440,8 @@ async function selectModel(key) {
     session = null;
     $("subtitle").textContent = `${option.name} could not be loaded.`;
     $("selftest").className = "badge bad";
-    $("selftest").textContent = `Model load failed: ${error.message}. Reload the page or choose the other model.`;
+    $("selftest").textContent = `Model load failed: ${error.message}. Reload the page or choose another model.`;
+    predictionStatus("The model could not load. Try reloading the page or choose another model.", true);
   } finally {
     loadingModel = false;
     $("modelChoice").disabled = false;
